@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -291,5 +292,57 @@ func TestZeroDowntime_BatchedBackfill(t *testing.T) {
 	}
 	if stats.TotalBatches != 5 {
 		t.Fatalf("expected 5 batches for 2500 rows at batch size 500, got %d", stats.TotalBatches)
+	}
+}
+
+// 11. Context cancellation during batched backfill
+func TestZeroDowntime_BatchedBackfill_Interrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	executor := NewSimulatedBackfillExecutor(10000)
+
+	// Cancel after short delay
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		cancel()
+	}()
+
+	stats, err := executor.ExecuteBackfill(ctx, BackfillConfig{
+		BatchSize:  100,
+		BatchDelay: 2 * time.Millisecond,
+	})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	if stats.TotalProcessed >= 10000 {
+		t.Fatalf("expected partial processing on cancel, got %d", stats.TotalProcessed)
+	}
+}
+
+// 12. PostgreSQL CTE batched update SQL generation
+func TestZeroDowntime_CTEBatchedUpdateSQL(t *testing.T) {
+	sql := GenerateCTEBatchedUpdateSQL("users", "id", "full_name = first_name || ' ' || last_name", "full_name IS NULL", 250)
+	if sql == "" {
+		t.Fatal("expected non-empty SQL")
+	}
+
+	expectedClauses := []string{
+		"WITH batch AS",
+		"SELECT id",
+		"FROM users",
+		"WHERE full_name IS NULL",
+		"ORDER BY id ASC",
+		"LIMIT 250",
+		"FOR UPDATE SKIP LOCKED",
+		"UPDATE users t",
+		"SET full_name = first_name || ' ' || last_name",
+		"WHERE t.id = batch.id",
+	}
+
+	for _, clause := range expectedClauses {
+		if !strings.Contains(sql, clause) {
+			t.Fatalf("missing expected clause '%s' in SQL:\n%s", clause, sql)
+		}
 	}
 }

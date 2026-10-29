@@ -2,6 +2,7 @@ package migrator
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -73,6 +74,39 @@ func (b *SimulatedBackfillExecutor) ExecuteBackfill(ctx context.Context, cfg Bac
 		TotalBatches:   batches,
 		DurationMs:     time.Since(start).Milliseconds(),
 	}, nil
+}
+
+// GenerateCTEBatchedUpdateSQL generates PostgreSQL CTE query for non-blocking batched updates.
+// Uses FOR UPDATE SKIP LOCKED to prevent table locks and lock contention with concurrent OLTP writes.
+func GenerateCTEBatchedUpdateSQL(table, primaryKey, updateAssignment, whereClause string, batchSize int) string {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	if whereClause == "" {
+		whereClause = "1=1"
+	}
+	return fmt.Sprintf(`WITH batch AS (
+    SELECT %s
+    FROM %s
+    WHERE %s
+    ORDER BY %s ASC
+    LIMIT %d
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE %s t
+SET %s
+FROM batch
+WHERE t.%s = batch.%s;`, primaryKey, table, whereClause, primaryKey, batchSize, table, updateAssignment, primaryKey, primaryKey)
+}
+
+// OperationalRisksGuide documents realistic locking trade-offs and non-zero-downtime edges.
+func OperationalRisksGuide() map[string]string {
+	return map[string]string{
+		"ALTER TABLE ... VALIDATE CONSTRAINT": "Acquires SHARE UPDATE EXCLUSIVE lock. While concurrent SELECT/INSERT/UPDATE are permitted, it blocks concurrent VACUUM, CREATE INDEX CONCURRENTLY, and other DDL.",
+		"CREATE INDEX CONCURRENTLY":            "Requires two table scans and waits for pending transactions to complete. If a long-running transaction is active, it blocks index completion and can leave invalid indexes.",
+		"Irreversible Migrations":             "Operations like DROP COLUMN cannot be rolled back via transactional DDL; forward-recovery migrations (e.g. re-adding column as nullable) must be planned.",
+		"Lock Queue Starvation":               "Even fast catalog operations (e.g. ALTER TABLE ADD COLUMN NULLABLE) require ACCESS EXCLUSIVE briefly; if long-running analytical queries hold locks, the DDL waits in queue and blocks subsequent read queries behind it unless lock_timeout is configured.",
+	}
 }
 
 // ZeroDowntimeGuide provides the documented 5-step expand-and-contract operational contract
