@@ -1,4 +1,4 @@
-# db-lifecycle: Production Database Migration & Schema Lifecycle Manager
+# db-lifecycle: Database Migration & Schema Lifecycle Manager
 
 `db-lifecycle` is a concurrency-safe, transactional PostgreSQL schema migration manager engineered in **Go**. Built for high-reliability data infrastructure, it orchestrates zero-downtime schema evolution, detects post-application file tampering via SHA-256 checksums, and coordinates distributed migration runners using PostgreSQL session-level advisory locks.
 
